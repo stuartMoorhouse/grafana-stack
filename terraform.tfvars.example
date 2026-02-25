@@ -1,0 +1,6 @@
+region                               = "us-east-1"
+prefix                               = "grafana-demo"
+# grafana_admin_credential: set via TF_VAR environment variable, not in this file
+eks_node_instance_type               = "t3.medium"
+eks_node_count                       = 2
+cluster_endpoint_public_access_cidrs = ["YOUR_IP/32"]
