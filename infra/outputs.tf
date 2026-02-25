@@ -18,6 +18,11 @@ output "prometheus_port_forward_command" {
   value       = "kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring"
 }
 
+output "boutique_frontend_port_forward_command" {
+  description = "Command to port-forward Online Boutique frontend to localhost:8080"
+  value       = "kubectl port-forward svc/frontend 8080:80 -n boutique"
+}
+
 output "kubeconfig_command" {
   description = "Command to update kubeconfig for this cluster"
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
@@ -31,7 +36,8 @@ output "region" {
 output "port_forwards" {
   description = "Active port-forwards"
   value       = <<-EOT
-    Grafana UI:    http://localhost:3000
-    Prometheus UI: http://localhost:9090
+    Grafana UI:             http://localhost:3000
+    Prometheus UI:          http://localhost:9090
+    Online Boutique frontend: http://localhost:8080
   EOT
 }

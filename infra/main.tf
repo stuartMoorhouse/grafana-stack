@@ -227,6 +227,37 @@ resource "null_resource" "prometheus_port_forward" {
 }
 
 ################################################################################
+# Port-forward Online Boutique frontend to localhost:8080
+################################################################################
+
+resource "null_resource" "boutique_frontend_port_forward" {
+  triggers = {
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Kill any existing port-forward on 8080
+      lsof -ti:8080 | xargs kill -9 2>/dev/null || true
+      # Start port-forward in background
+      nohup kubectl port-forward svc/frontend 8080:80 -n boutique > /dev/null 2>&1 &
+      # Wait briefly and verify it started
+      sleep 2
+      if lsof -ti:8080 > /dev/null 2>&1; then
+        echo "Online Boutique frontend available at http://localhost:8080"
+      else
+        echo "WARNING: port-forward may not have started — run manually:"
+        echo "  kubectl port-forward svc/frontend 8080:80 -n boutique"
+      fi
+    EOT
+  }
+
+  depends_on = [
+    null_resource.online_boutique,
+  ]
+}
+
+################################################################################
 # Kubernetes Namespaces
 ################################################################################
 
@@ -567,46 +598,27 @@ resource "helm_release" "otel_collector" {
 }
 
 ################################################################################
-# Helm Release: Online Boutique
+# Deploy Online Boutique (raw manifests — Helm OCI registry was deleted)
 ################################################################################
 
-# Online Boutique deployed via kubectl (raw manifests) instead of Helm.
-# The OCI registry (us-docker.pkg.dev/online-boutique-ci/charts) GCP project was deleted.
-# Manifests source: https://github.com/GoogleCloudPlatform/microservices-demo/blob/main/release/kubernetes-manifests.yaml
-# resource "helm_release" "online_boutique" {
-#   name             = "online-boutique"
-#   repository       = "oci://us-docker.pkg.dev/online-boutique-ci/charts"
-#   chart            = "onlineboutique"
-#   version          = "0.10.1"
-#   namespace        = kubernetes_namespace.boutique.metadata[0].name
-#   create_namespace = false
-#   timeout          = 600
-#
-#   values = [yamlencode({
-#     opentelemetryCollector = {
-#       create = false
-#     }
-#     default = {
-#       env = [
-#         {
-#           name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
-#           value = "http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4317"
-#         }
-#       ]
-#     }
-#     loadGenerator = {
-#       create = true
-#     }
-#     frontend = {
-#       externalService = false
-#     }
-#   })]
-#
-#   depends_on = [
-#     module.eks,
-#     helm_release.otel_collector,
-#   ]
-# }
+resource "null_resource" "online_boutique" {
+  triggers = {
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml -n boutique
+      echo "Waiting for Online Boutique pods to be ready..."
+      kubectl wait --for=condition=ready pod -l app=frontend -n boutique --timeout=300s
+    EOT
+  }
+
+  depends_on = [
+    null_resource.update_kubeconfig,
+    kubernetes_namespace.boutique,
+  ]
+}
 
 ################################################################################
 # Dashboard ConfigMaps
