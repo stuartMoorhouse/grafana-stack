@@ -17,6 +17,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 2.25"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 }
 
@@ -139,6 +143,87 @@ resource "aws_kms_key" "eks" {
   tags = {
     Project = var.prefix
   }
+}
+
+################################################################################
+# Update local kubeconfig
+################################################################################
+
+resource "null_resource" "update_kubeconfig" {
+  triggers = {
+    cluster_name     = module.eks.cluster_name
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
+  }
+
+  depends_on = [module.eks]
+}
+
+################################################################################
+# Port-forward Grafana to localhost:3000
+################################################################################
+
+resource "null_resource" "grafana_port_forward" {
+  triggers = {
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Kill any existing port-forward on 3000
+      lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+      # Start port-forward in background
+      nohup kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring > /dev/null 2>&1 &
+      # Wait briefly and verify it started
+      sleep 2
+      if lsof -ti:3000 > /dev/null 2>&1; then
+        echo "Grafana available at http://localhost:3000"
+      else
+        echo "WARNING: port-forward may not have started — run manually:"
+        echo "  kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring"
+      fi
+    EOT
+  }
+
+  depends_on = [
+    null_resource.update_kubeconfig,
+    helm_release.kube_prometheus_stack,
+  ]
+}
+
+################################################################################
+# Port-forward Prometheus to localhost:9090
+################################################################################
+
+resource "null_resource" "prometheus_port_forward" {
+  triggers = {
+    cluster_endpoint = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Kill any existing port-forward on 9090
+      lsof -ti:9090 | xargs kill -9 2>/dev/null || true
+      # Start port-forward in background
+      nohup kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring > /dev/null 2>&1 &
+      # Wait briefly and verify it started
+      sleep 2
+      if lsof -ti:9090 > /dev/null 2>&1; then
+        echo "Prometheus available at http://localhost:9090"
+      else
+        echo "WARNING: port-forward may not have started — run manually:"
+        echo "  kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring"
+      fi
+    EOT
+  }
+
+  depends_on = [
+    null_resource.update_kubeconfig,
+    helm_release.kube_prometheus_stack,
+  ]
 }
 
 ################################################################################
