@@ -76,7 +76,7 @@ sum by (pod) (
 
 ```promql
 sum by (service) (
-  rate(tempo_service_graph_request_total{service=~"frontend|checkoutservice"}[5m])
+  rate(traces_service_graph_request_total{service=~"frontend|checkoutservice"}[5m])
 )
 ```
 
@@ -129,7 +129,7 @@ Histograms store observations in buckets. Use `histogram_quantile()` to compute 
 ```promql
 histogram_quantile(0.50,
   sum by (le, service) (
-    rate(tempo_service_graph_request_server_seconds_bucket{service=~"frontend|checkoutservice"}[5m])
+    rate(traces_service_graph_request_server_seconds_bucket{service=~"frontend|checkoutservice"}[5m])
   )
 )
 ```
@@ -139,7 +139,7 @@ histogram_quantile(0.50,
 ```promql
 histogram_quantile(0.90,
   sum by (le, service) (
-    rate(tempo_service_graph_request_server_seconds_bucket[5m])
+    rate(traces_service_graph_request_server_seconds_bucket[5m])
   )
 )
 ```
@@ -149,7 +149,7 @@ histogram_quantile(0.90,
 ```promql
 histogram_quantile(0.99,
   sum by (le, service) (
-    rate(tempo_service_graph_request_server_seconds_bucket[5m])
+    rate(traces_service_graph_request_server_seconds_bucket[5m])
   )
 )
 ```
@@ -163,17 +163,17 @@ Divide two instant vectors to compute ratios. Labels must match on both sides.
 **Error rate per service** (failed requests / total requests):
 
 ```promql
-sum by (service) (rate(tempo_service_graph_request_failed_total[5m]))
+sum by (service) (rate(traces_service_graph_request_failed_total[5m]))
 /
-sum by (service) (rate(tempo_service_graph_request_total[5m]))
+sum by (service) (rate(traces_service_graph_request_total[5m]))
 ```
 
 **Error rate per service-to-service edge:**
 
 ```promql
-sum by (client, server) (rate(tempo_service_graph_request_failed_total[5m]))
+sum by (client, server) (rate(traces_service_graph_request_failed_total[5m]))
 /
-sum by (client, server) (rate(tempo_service_graph_request_total[5m]))
+sum by (client, server) (rate(traces_service_graph_request_total[5m]))
 ```
 
 **CPU requests vs capacity** (cluster-wide):
@@ -575,12 +575,12 @@ When viewing a trace in Grafana, each span has a "Logs" link that runs:
 This is configured in the Tempo data source's `tracesToLogsV2` setting with `filterByTraceID=true` and a +/-1h time window.
 
 **Trace to Metrics (Tempo -> Prometheus):**
-The Tempo data source has `tracesToMetrics` configured with the Prometheus data source. Tempo's service graph processor generates the `tempo_service_graph_request_*` metrics that power the RED dashboards and service dependency map.
+The Tempo data source has `tracesToMetrics` configured with the Prometheus data source. Tempo's service graph processor generates the `traces_service_graph_request_*` metrics that power the RED dashboards and service dependency map.
 
 Key metrics generated from traces:
-- `tempo_service_graph_request_total` -- request count by client/server
-- `tempo_service_graph_request_failed_total` -- failed request count
-- `tempo_service_graph_request_server_seconds_bucket` -- latency histogram
+- `traces_service_graph_request_total` -- request count by client/server
+- `traces_service_graph_request_failed_total` -- failed request count
+- `traces_service_graph_request_server_seconds_bucket` -- latency histogram
 
 **Log to Trace (Loki -> Tempo):**
 The Loki data source has `derivedFields` configured to extract trace IDs from logs using:
@@ -602,9 +602,9 @@ When Grafana detects a trace ID in a log line, it renders a clickable link that 
 | Pod count by namespace | `sum by (namespace) (kube_pod_info)` |
 | CPU usage by pod | `sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="boutique", container!="", container!="POD"}[5m]))` |
 | Memory usage by pod | `sum by (pod) (container_memory_working_set_bytes{namespace="boutique", container!="", container!="POD"})` |
-| Request rate by service | `sum by (service) (rate(tempo_service_graph_request_total[5m]))` |
-| Error rate by service | `sum by (service) (rate(tempo_service_graph_request_failed_total[5m])) / sum by (service) (rate(tempo_service_graph_request_total[5m]))` |
-| p99 latency by service | `histogram_quantile(0.99, sum by (le, service) (rate(tempo_service_graph_request_server_seconds_bucket[5m])))` |
+| Request rate by service | `sum by (service) (rate(traces_service_graph_request_total[5m]))` |
+| Error rate by service | `sum by (service) (rate(traces_service_graph_request_failed_total[5m])) / sum by (service) (rate(traces_service_graph_request_total[5m]))` |
+| p99 latency by service | `histogram_quantile(0.99, sum by (le, service) (rate(traces_service_graph_request_server_seconds_bucket[5m])))` |
 | Node CPU % | `1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))` |
 | Pod restarts | `increase(kube_pod_container_status_restarts_total{namespace="boutique"}[5m])` |
 

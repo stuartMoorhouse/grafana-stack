@@ -430,6 +430,7 @@ resource "helm_release" "kube_prometheus_stack" {
         retention                               = "7d"
         serviceMonitorSelectorNilUsesHelmValues = false
         podMonitorSelectorNilUsesHelmValues     = false
+        enableRemoteWriteReceiver               = true
       }
     }
 
@@ -673,6 +674,16 @@ resource "null_resource" "online_boutique" {
   provisioner "local-exec" {
     command = <<-EOT
       kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml -n boutique
+
+      echo "Patching boutique deployments with OTel collector endpoint..."
+      TRACED_SERVICES="checkoutservice currencyservice emailservice frontend paymentservice productcatalogservice recommendationservice"
+      for svc in $TRACED_SERVICES; do
+        kubectl set env deployment/$svc -n boutique \
+          COLLECTOR_SERVICE_ADDR="tempo.monitoring:4317" \
+          OTEL_SERVICE_NAME="$svc" \
+          ENABLE_TRACING=1
+      done
+
       echo "Waiting for Online Boutique pods to be ready..."
       kubectl wait --for=condition=ready pod -l app=frontend -n boutique --timeout=300s
     EOT
@@ -681,6 +692,7 @@ resource "null_resource" "online_boutique" {
   depends_on = [
     null_resource.update_kubeconfig,
     kubernetes_namespace.boutique,
+    helm_release.otel_collector,
   ]
 }
 

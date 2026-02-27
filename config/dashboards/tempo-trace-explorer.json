@@ -75,7 +75,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (service) (rate(tempo_service_graph_request_total{service=~\"$service\"}[5m]))",
+          "expr": "sum by (service) (rate(traces_service_graph_request_total{service=~\"$service\"}[5m]))",
           "legendFormat": "{{service}}",
           "refId": "A"
         }
@@ -246,7 +246,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, service) (rate(tempo_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, service) (rate(traces_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
           "legendFormat": "{{service}} p50",
           "refId": "A"
         },
@@ -255,7 +255,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(tempo_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(traces_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
           "legendFormat": "{{service}} p95",
           "refId": "B"
         },
@@ -264,7 +264,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(tempo_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_service_graph_request_server_seconds_bucket{service=~\"$service\"}[5m])))",
           "legendFormat": "{{service}} p99",
           "refId": "C"
         }
@@ -285,7 +285,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(tempo_service_graph_request_total, service)",
+        "definition": "label_values(traces_service_graph_request_total, service)",
         "hide": 0,
         "includeAll": true,
         "label": "Service",
@@ -294,7 +294,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(tempo_service_graph_request_total, service)",
+          "query": "label_values(traces_service_graph_request_total, service)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
