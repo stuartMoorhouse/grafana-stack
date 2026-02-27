@@ -21,6 +21,10 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
+    }
   }
 }
 
@@ -61,6 +65,14 @@ data "aws_availability_zones" "available" {
     name   = "opt-in-status"
     values = ["opt-in-not-required"]
   }
+}
+
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com"
+}
+
+locals {
+  my_ip_cidr = "${trimspace(data.http.my_ip.response_body)}/32"
 }
 
 ################################################################################
@@ -175,7 +187,7 @@ module "eks" {
   subnet_ids = module.vpc.private_subnets
 
   cluster_endpoint_public_access       = true
-  cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+  cluster_endpoint_public_access_cidrs = [local.my_ip_cidr]
 
   enable_cluster_creator_admin_permissions = true
 
@@ -227,98 +239,64 @@ resource "null_resource" "update_kubeconfig" {
 }
 
 ################################################################################
-# Port-forward Grafana to localhost:3000
+# Patch Online Boutique frontend to LoadBalancer
 ################################################################################
 
-resource "null_resource" "grafana_port_forward" {
+resource "null_resource" "boutique_frontend_lb" {
   triggers = {
-    cluster_endpoint = module.eks.cluster_endpoint
+    my_ip_cidr = local.my_ip_cidr
   }
 
   provisioner "local-exec" {
     command = <<-EOT
-      # Kill any existing port-forward on 3000
-      lsof -ti:3000 | xargs kill -9 2>/dev/null || true
-      # Start port-forward in background
-      nohup kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring > /dev/null 2>&1 &
-      # Wait briefly and verify it started
-      sleep 2
-      if lsof -ti:3000 > /dev/null 2>&1; then
-        echo "Grafana available at http://localhost:3000"
-      else
-        echo "WARNING: port-forward may not have started — run manually:"
-        echo "  kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring"
-      fi
+      kubectl patch svc frontend -n boutique -p '{"spec":{"type":"LoadBalancer","loadBalancerSourceRanges":["${local.my_ip_cidr}"]}}'
+      echo "Waiting for frontend LoadBalancer hostname..."
+      for i in $(seq 1 30); do
+        HOST=$(kubectl get svc frontend -n boutique -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+        if [ -n "$HOST" ]; then
+          echo "Online Boutique: http://$HOST"
+          break
+        fi
+        sleep 10
+      done
     EOT
   }
 
   depends_on = [
     null_resource.update_kubeconfig,
-    helm_release.kube_prometheus_stack,
-  ]
-}
-
-################################################################################
-# Port-forward Prometheus to localhost:9090
-################################################################################
-
-resource "null_resource" "prometheus_port_forward" {
-  triggers = {
-    cluster_endpoint = module.eks.cluster_endpoint
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      # Kill any existing port-forward on 9090
-      lsof -ti:9090 | xargs kill -9 2>/dev/null || true
-      # Start port-forward in background
-      nohup kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring > /dev/null 2>&1 &
-      # Wait briefly and verify it started
-      sleep 2
-      if lsof -ti:9090 > /dev/null 2>&1; then
-        echo "Prometheus available at http://localhost:9090"
-      else
-        echo "WARNING: port-forward may not have started — run manually:"
-        echo "  kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n monitoring"
-      fi
-    EOT
-  }
-
-  depends_on = [
-    null_resource.update_kubeconfig,
-    helm_release.kube_prometheus_stack,
-  ]
-}
-
-################################################################################
-# Port-forward Online Boutique frontend to localhost:8080
-################################################################################
-
-resource "null_resource" "boutique_frontend_port_forward" {
-  triggers = {
-    cluster_endpoint = module.eks.cluster_endpoint
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      # Kill any existing port-forward on 8080
-      lsof -ti:8080 | xargs kill -9 2>/dev/null || true
-      # Start port-forward in background
-      nohup kubectl port-forward svc/frontend 8080:80 -n boutique > /dev/null 2>&1 &
-      # Wait briefly and verify it started
-      sleep 2
-      if lsof -ti:8080 > /dev/null 2>&1; then
-        echo "Online Boutique frontend available at http://localhost:8080"
-      else
-        echo "WARNING: port-forward may not have started — run manually:"
-        echo "  kubectl port-forward svc/frontend 8080:80 -n boutique"
-      fi
-    EOT
-  }
-
-  depends_on = [
     null_resource.online_boutique,
   ]
+}
+
+################################################################################
+# Read LoadBalancer hostnames for outputs
+################################################################################
+
+data "kubernetes_service" "grafana" {
+  metadata {
+    name      = "kube-prometheus-stack-grafana"
+    namespace = "monitoring"
+  }
+
+  depends_on = [helm_release.kube_prometheus_stack]
+}
+
+data "kubernetes_service" "prometheus" {
+  metadata {
+    name      = "kube-prometheus-stack-prometheus"
+    namespace = "monitoring"
+  }
+
+  depends_on = [helm_release.kube_prometheus_stack]
+}
+
+data "kubernetes_service" "boutique_frontend" {
+  metadata {
+    name      = "frontend"
+    namespace = "boutique"
+  }
+
+  depends_on = [null_resource.boutique_frontend_lb]
 }
 
 ################################################################################
@@ -360,7 +338,8 @@ resource "helm_release" "kube_prometheus_stack" {
       adminPassword = var.grafana_admin_password
 
       service = {
-        type = "ClusterIP"
+        type                    = "LoadBalancer"
+        loadBalancerSourceRanges = [local.my_ip_cidr]
       }
 
       sidecar = {
@@ -426,6 +405,10 @@ resource "helm_release" "kube_prometheus_stack" {
     }
 
     prometheus = {
+      service = {
+        type                    = "LoadBalancer"
+        loadBalancerSourceRanges = [local.my_ip_cidr]
+      }
       prometheusSpec = {
         retention                               = "7d"
         serviceMonitorSelectorNilUsesHelmValues = false

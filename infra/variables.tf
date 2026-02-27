@@ -27,9 +27,3 @@ variable "eks_node_count" {
   type        = number
   default     = 2
 }
-
-variable "cluster_endpoint_public_access_cidrs" {
-  description = "CIDR blocks allowed to access the EKS API endpoint (restrict to your IP)"
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
-}
