@@ -5,9 +5,9 @@
 terraform {
   required_version = ">= 1.5"
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+    vultr = {
+      source  = "vultr/vultr"
+      version = "~> 2.0"
     }
     helm = {
       source  = "hashicorp/helm"
@@ -25,47 +25,40 @@ terraform {
       source  = "hashicorp/http"
       version = "~> 3.4"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.11"
+    }
   }
 }
 
-provider "aws" {
-  region = var.region
+provider "vultr" {
+  # Uses VULTR_API_KEY environment variable
 }
 
 provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-  }
+  host                   = "https://${vultr_kubernetes.cluster.endpoint}:6443"
+  cluster_ca_certificate = base64decode(vultr_kubernetes.cluster.cluster_ca_certificate)
+  client_certificate     = base64decode(vultr_kubernetes.cluster.client_certificate)
+  client_key             = base64decode(vultr_kubernetes.cluster.client_key)
 }
 
 provider "helm" {
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-    }
+    host                   = "https://${vultr_kubernetes.cluster.endpoint}:6443"
+    cluster_ca_certificate = base64decode(vultr_kubernetes.cluster.cluster_ca_certificate)
+    client_certificate     = base64decode(vultr_kubernetes.cluster.client_certificate)
+    client_key             = base64decode(vultr_kubernetes.cluster.client_key)
   }
 }
 
 ################################################################################
 # Data Sources
 ################################################################################
-
-data "aws_availability_zones" "available" {
-  filter {
-    name   = "opt-in-status"
-    values = ["opt-in-not-required"]
-  }
-}
 
 data "http" "my_ip" {
   url = "https://checkip.amazonaws.com"
@@ -76,166 +69,75 @@ locals {
 }
 
 ################################################################################
-# VPC
+# VKE Cluster
 ################################################################################
 
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
+resource "vultr_kubernetes" "cluster" {
+  region  = var.region
+  label   = "${var.prefix}-cluster"
+  version = var.vke_version
 
-  name = "${var.prefix}-vpc"
-  cidr = "10.0.0.0/16"
-
-  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
-  public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
-  private_subnets = ["10.0.11.0/24", "10.0.12.0/24", "10.0.13.0/24"]
-
-  enable_nat_gateway   = false
-  enable_dns_hostnames = true
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb"                      = 1
-    "kubernetes.io/cluster/${var.prefix}-cluster" = "owned"
-  }
-
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb"             = 1
-    "kubernetes.io/cluster/${var.prefix}-cluster" = "owned"
-  }
-
-  tags = {
-    Project = var.prefix
+  node_pools {
+    node_quantity = var.node_count
+    plan          = var.node_plan
+    label         = "default"
+    auto_scaler   = true
+    min_nodes     = 1
+    max_nodes     = 3
   }
 }
 
 ################################################################################
-# NAT Instance (fck-nat, replaces NAT Gateway to save ~$30/mo)
+# Wait for VKE API server to accept connections
 ################################################################################
 
-data "aws_ami" "fck_nat" {
-  most_recent = true
-  owners      = ["568608671756"]
-
-  filter {
-    name   = "name"
-    values = ["fck-nat-al2023-*-arm64-ebs"]
-  }
-
-  filter {
-    name   = "architecture"
-    values = ["arm64"]
-  }
-}
-
-resource "aws_security_group" "nat" {
-  name_prefix = "${var.prefix}-nat-"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = [module.vpc.vpc_cidr_block]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name    = "${var.prefix}-nat"
-    Project = var.prefix
-  }
-}
-
-resource "aws_instance" "nat" {
-  ami                         = data.aws_ami.fck_nat.id
-  instance_type               = "t4g.nano"
-  subnet_id                   = module.vpc.public_subnets[0]
-  vpc_security_group_ids      = [aws_security_group.nat.id]
-  source_dest_check           = false
-  associate_public_ip_address = true
-
-  tags = {
-    Name    = "${var.prefix}-nat"
-    Project = var.prefix
-  }
-}
-
-resource "aws_route" "private_nat" {
-  count                  = length(module.vpc.private_route_table_ids)
-  route_table_id         = module.vpc.private_route_table_ids[count.index]
-  destination_cidr_block = "0.0.0.0/0"
-  network_interface_id   = aws_instance.nat.primary_network_interface_id
+resource "time_sleep" "wait_for_api" {
+  depends_on      = [vultr_kubernetes.cluster]
+  create_duration = "60s"
 }
 
 ################################################################################
-# EKS Cluster
+# Write kubeconfig for kubectl access
 ################################################################################
 
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
-
-  cluster_name    = "${var.prefix}-cluster"
-  cluster_version = "1.29"
-
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
-
-  cluster_endpoint_public_access       = true
-  cluster_endpoint_public_access_cidrs = [local.my_ip_cidr]
-
-  enable_cluster_creator_admin_permissions = true
-
-  cluster_encryption_config = {
-    provider_key_arn = aws_kms_key.eks.arn
-    resources        = ["secrets"]
-  }
-
-  eks_managed_node_groups = {
-    default = {
-      instance_types = [var.eks_node_instance_type]
-      capacity_type  = "SPOT"
-      min_size       = 1
-      max_size       = 3
-      desired_size   = var.eks_node_count
-    }
-  }
-
-  tags = {
-    Project = var.prefix
-  }
-}
-
-resource "aws_kms_key" "eks" {
-  description             = "${var.prefix} EKS secret encryption key"
-  deletion_window_in_days = 7
-  enable_key_rotation     = true
-
-  tags = {
-    Project = var.prefix
-  }
+resource "local_sensitive_file" "kubeconfig" {
+  content         = base64decode(vultr_kubernetes.cluster.kube_config)
+  filename        = "${path.module}/kubeconfig"
+  file_permission = "0600"
+  depends_on      = [time_sleep.wait_for_api]
 }
 
 ################################################################################
-# Update local kubeconfig
+# Merge kubeconfig into ~/.kube/config and set active context
 ################################################################################
 
-resource "null_resource" "update_kubeconfig" {
+resource "null_resource" "kubectl_config" {
+  depends_on = [local_sensitive_file.kubeconfig]
+
   triggers = {
-    cluster_name     = module.eks.cluster_name
-    cluster_endpoint = module.eks.cluster_endpoint
+    cluster_id = vultr_kubernetes.cluster.id
   }
 
   provisioner "local-exec" {
-    command = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
-  }
+    command = <<-EOT
+      # Backup existing kubeconfig
+      [ -f "$HOME/.kube/config" ] && cp "$HOME/.kube/config" "$HOME/.kube/config.bak"
 
-  depends_on = [module.eks]
+      # Merge Vultr kubeconfig into ~/.kube/config
+      mkdir -p "$HOME/.kube"
+      KUBECONFIG="${path.module}/kubeconfig:$HOME/.kube/config" \
+        kubectl config view --flatten > "$HOME/.kube/config.merged"
+      mv "$HOME/.kube/config.merged" "$HOME/.kube/config"
+      chmod 600 "$HOME/.kube/config"
+
+      # Set active context to Vultr cluster
+      VULTR_CTX=$(kubectl --kubeconfig="${path.module}/kubeconfig" config current-context)
+      kubectl config use-context "$VULTR_CTX"
+
+      echo "kubectl configured for Vultr VKE cluster"
+      kubectl cluster-info
+    EOT
+  }
 }
 
 ################################################################################
@@ -248,13 +150,17 @@ resource "null_resource" "boutique_frontend_lb" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = abspath(local_sensitive_file.kubeconfig.filename)
+    }
     command = <<-EOT
-      kubectl patch svc frontend -n boutique -p '{"spec":{"type":"LoadBalancer","loadBalancerSourceRanges":["${local.my_ip_cidr}"]}}'
-      echo "Waiting for frontend LoadBalancer hostname..."
+      kubectl patch svc frontend -n boutique -p '{"spec":{"type":"ClusterIP"}}' --type=merge
+      kubectl patch svc frontend-external -n boutique -p '{"spec":{"loadBalancerSourceRanges":["${local.my_ip_cidr}"]}}'
+      echo "Waiting for frontend-external LoadBalancer IP..."
       for i in $(seq 1 30); do
-        HOST=$(kubectl get svc frontend -n boutique -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
-        if [ -n "$HOST" ]; then
-          echo "Online Boutique: http://$HOST"
+        IP=$(kubectl get svc frontend-external -n boutique -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+        if [ -n "$IP" ]; then
+          echo "Online Boutique: http://$IP"
           break
         fi
         sleep 10
@@ -263,13 +169,13 @@ resource "null_resource" "boutique_frontend_lb" {
   }
 
   depends_on = [
-    null_resource.update_kubeconfig,
+    local_sensitive_file.kubeconfig,
     null_resource.online_boutique,
   ]
 }
 
 ################################################################################
-# Read LoadBalancer hostnames for outputs
+# Read LoadBalancer IPs for outputs
 ################################################################################
 
 data "kubernetes_service" "grafana" {
@@ -292,7 +198,7 @@ data "kubernetes_service" "prometheus" {
 
 data "kubernetes_service" "boutique_frontend" {
   metadata {
-    name      = "frontend"
+    name      = "frontend-external"
     namespace = "boutique"
   }
 
@@ -308,7 +214,7 @@ resource "kubernetes_namespace" "monitoring" {
     name = "monitoring"
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 resource "kubernetes_namespace" "boutique" {
@@ -316,7 +222,7 @@ resource "kubernetes_namespace" "boutique" {
     name = "boutique"
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 ################################################################################
@@ -327,7 +233,7 @@ resource "helm_release" "kube_prometheus_stack" {
   name             = "kube-prometheus-stack"
   repository       = "https://prometheus-community.github.io/helm-charts"
   chart            = "kube-prometheus-stack"
-  version          = "65.1.0"
+  version          = "70.0.0"
   namespace        = kubernetes_namespace.monitoring.metadata[0].name
   create_namespace = false
   timeout          = 600
@@ -337,8 +243,12 @@ resource "helm_release" "kube_prometheus_stack" {
       enabled       = true
       adminPassword = var.grafana_admin_password
 
+      image = {
+        tag = "12.3.4"
+      }
+
       service = {
-        type                    = "LoadBalancer"
+        type                     = "LoadBalancer"
         loadBalancerSourceRanges = [local.my_ip_cidr]
       }
 
@@ -406,7 +316,7 @@ resource "helm_release" "kube_prometheus_stack" {
 
     prometheus = {
       service = {
-        type                    = "LoadBalancer"
+        type                     = "LoadBalancer"
         loadBalancerSourceRanges = [local.my_ip_cidr]
       }
       prometheusSpec = {
@@ -415,6 +325,17 @@ resource "helm_release" "kube_prometheus_stack" {
         podMonitorSelectorNilUsesHelmValues     = false
         enableRemoteWriteReceiver               = true
       }
+    }
+
+    # VKE control plane components are managed by Vultr and not exposed for scraping
+    kubeControllerManager = {
+      enabled = false
+    }
+    kubeEtcd = {
+      enabled = false
+    }
+    kubeScheduler = {
+      enabled = false
     }
 
     alertmanager = {
@@ -494,7 +415,7 @@ resource "helm_release" "kube_prometheus_stack" {
     }
   })]
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 ################################################################################
@@ -522,7 +443,7 @@ resource "helm_release" "loki" {
     }
   })]
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 ################################################################################
@@ -566,7 +487,7 @@ resource "helm_release" "tempo" {
     }
   })]
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 ################################################################################
@@ -642,7 +563,7 @@ resource "helm_release" "otel_collector" {
     }
   })]
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 ################################################################################
@@ -651,10 +572,13 @@ resource "helm_release" "otel_collector" {
 
 resource "null_resource" "online_boutique" {
   triggers = {
-    cluster_endpoint = module.eks.cluster_endpoint
+    cluster_id = vultr_kubernetes.cluster.id
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = abspath(local_sensitive_file.kubeconfig.filename)
+    }
     command = <<-EOT
       kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml -n boutique
 
@@ -673,7 +597,7 @@ resource "null_resource" "online_boutique" {
   }
 
   depends_on = [
-    null_resource.update_kubeconfig,
+    local_sensitive_file.kubeconfig,
     kubernetes_namespace.boutique,
     helm_release.otel_collector,
   ]
@@ -710,5 +634,5 @@ resource "kubernetes_config_map" "grafana_dashboards" {
     "${each.value}" = file("${path.module}/../config/dashboards/${each.value}")
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }

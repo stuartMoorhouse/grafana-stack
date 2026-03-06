@@ -1,7 +1,7 @@
 variable "region" {
-  description = "AWS region"
+  description = "Vultr region slug (e.g. ewr, ord, lax, ams)"
   type        = string
-  default     = "us-east-1"
+  default     = "ewr"
 }
 
 variable "prefix" {
@@ -14,16 +14,23 @@ variable "grafana_admin_password" {
   description = "Admin password for Grafana"
   type        = string
   sensitive   = true
+  default     = "admin"
 }
 
-variable "eks_node_instance_type" {
-  description = "EC2 instance type for EKS managed node group"
+variable "vke_version" {
+  description = "Kubernetes version for VKE (check: curl -H 'Authorization: Bearer $VULTR_API_KEY' https://api.vultr.com/v2/kubernetes/versions)"
   type        = string
-  default     = "t3.medium"
+  default     = "v1.32.9+3"
 }
 
-variable "eks_node_count" {
-  description = "Desired number of EKS worker nodes"
+variable "node_plan" {
+  description = "Vultr compute plan for VKE nodes (e.g. vc2-2c-4gb, vc2-4c-8gb)"
+  type        = string
+  default     = "vc2-2c-4gb"
+}
+
+variable "node_count" {
+  description = "Desired number of VKE worker nodes"
   type        = number
   default     = 2
 }

@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 # Dependency checks
 # ---------------------------------------------------------------------------
 missing=()
-for cmd in terraform aws kubectl jq; do
+for cmd in terraform kubectl jq; do
   if ! command -v "$cmd" &>/dev/null; then
     missing+=("$cmd")
   fi
@@ -27,31 +27,34 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Read Terraform outputs
+# Read Terraform outputs and set kubeconfig
 # ---------------------------------------------------------------------------
 echo -e "${YELLOW}[1/5] Reading Terraform outputs...${NC}"
 
-CLUSTER_NAME=$(terraform -chdir=infra output -raw cluster_name 2>/dev/null || true)
+KUBECONFIG_PATH=$(terraform -chdir=infra output -raw kubeconfig_path 2>/dev/null || true)
 REGION=$(terraform -chdir=infra output -raw region 2>/dev/null || true)
-if [ -z "$CLUSTER_NAME" ]; then
-  echo -e "${RED}  Could not read cluster_name from Terraform outputs.${NC}"
+CLUSTER_ID=$(terraform -chdir=infra output -raw cluster_id 2>/dev/null || true)
+
+if [ -z "$KUBECONFIG_PATH" ] || [ ! -f "$KUBECONFIG_PATH" ]; then
+  echo -e "${RED}  Could not find kubeconfig from Terraform outputs.${NC}"
   echo "  Ensure 'terraform apply' has completed successfully in infra/."
   exit 1
 fi
 
-if [ -z "$REGION" ]; then
-  REGION="us-east-1"
-  echo -e "${YELLOW}  Region not in outputs, defaulting to ${REGION}.${NC}"
+export KUBECONFIG="$KUBECONFIG_PATH"
+echo -e "${GREEN}  Cluster ID: ${CLUSTER_ID}  Region: ${REGION}${NC}"
+echo -e "${GREEN}  KUBECONFIG: ${KUBECONFIG_PATH}${NC}"
+
+# ---------------------------------------------------------------------------
+# Verify cluster connectivity
+# ---------------------------------------------------------------------------
+echo -e "\n${YELLOW}[2/5] Verifying cluster connectivity...${NC}"
+if kubectl cluster-info &>/dev/null; then
+  echo -e "${GREEN}  Connected to cluster.${NC}"
+else
+  echo -e "${RED}  Cannot connect to cluster. Check that VKE is running.${NC}"
+  exit 1
 fi
-
-echo -e "${GREEN}  Cluster: ${CLUSTER_NAME}  Region: ${REGION}${NC}"
-
-# ---------------------------------------------------------------------------
-# Update kubeconfig
-# ---------------------------------------------------------------------------
-echo -e "\n${YELLOW}[2/5] Updating kubeconfig...${NC}"
-aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
-echo -e "${GREEN}  Kubeconfig updated.${NC}"
 
 # ---------------------------------------------------------------------------
 # Wait for boutique pods
@@ -149,7 +152,7 @@ if kill -0 "$PF_PID" 2>/dev/null; then
   echo -e "${GREEN}  Grafana port-forward active (PID: ${PF_PID}).${NC}"
 else
   echo -e "${RED}  Port-forward failed to start. Try manually:${NC}"
-  echo "  kubectl port-forward ${GRAFANA_SVC} 3000:80 -n monitoring"
+  echo "  KUBECONFIG=${KUBECONFIG_PATH} kubectl port-forward ${GRAFANA_SVC} 3000:80 -n monitoring"
   exit 1
 fi
 
@@ -185,8 +188,9 @@ echo "    URL:      ${GRAFANA_URL}"
 echo "    Username: admin"
 echo "    Password: (retrieve via: terraform -chdir=infra output -raw grafana_admin_password)"
 echo ""
-echo "  Cluster:    ${CLUSTER_NAME}"
+echo "  Cluster ID: ${CLUSTER_ID}"
 echo "  Region:     ${REGION}"
+echo "  KUBECONFIG: ${KUBECONFIG_PATH}"
 echo ""
 echo "  Port-forward PID: ${PF_PID}"
 echo "  To stop:    kill ${PF_PID}"
